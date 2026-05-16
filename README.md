@@ -1,4 +1,4 @@
-# AI PDF Highlighter
+# AI PDF Highlighter (https://ai-pdf-highlighter.vercel.app)
 
 Upload any PDF essay or document and Claude AI automatically highlights the most important sentences — thesis statements, key arguments, conclusions, and critical facts — to help students study faster.
 

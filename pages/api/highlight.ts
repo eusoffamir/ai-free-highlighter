@@ -57,7 +57,7 @@ async function queryHF(
   retried = false
 ): Promise<HFResponse> {
   const HF_API =
-    'https://api-inference.huggingface.co/models/facebook/bart-large-mnli'
+    'https://router.huggingface.co/hf-inference/models/facebook/bart-large-mnli'
 
   const res = await fetch(HF_API, {
     method: 'POST',

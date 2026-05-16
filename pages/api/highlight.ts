@@ -83,7 +83,7 @@ async function queryHF(sentence: string, hfToken: string, retried = false): Prom
 }
 
 async function getImportantSentences(sentences: string[], hfToken: string): Promise<string[]> {
-  const toAnalyze = sentences.slice(0, 60)
+  const toAnalyze = sentences.slice(0, 20)
   const scored: { sentence: string; score: number }[] = []
 
   const BATCH = 5
@@ -96,8 +96,10 @@ async function getImportantSentences(sentences: string[], hfToken: string): Prom
         scored.push({ sentence: batch[j], score: 0 })
         continue
       }
-      const idx = r.labels.indexOf('key point')
-      scored.push({ sentence: batch[j], score: idx >= 0 ? r.scores[idx] : 0 })
+      // const idx = r.labels.indexOf('key point')
+      const keyPoint = r.find((x: any) => x.label === 'key point')
+      //scored.push({ sentence: batch[j], score: idx >= 0 ? r.scores[idx] : 0 })
+      scored.push({ sentence: batch[j], score: keyPoint ? keyPoint.score : 0,})
     }
   }
 

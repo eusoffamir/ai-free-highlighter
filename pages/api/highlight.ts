@@ -7,7 +7,6 @@ export const config = {
   api: { bodyParser: false },
 }
 
-// ── Parse multipart form ──────────────────────────────────────────────────────
 async function parseForm(req: NextApiRequest): Promise<string> {
   return new Promise((resolve, reject) => {
     const form = formidable({
@@ -25,9 +24,7 @@ async function parseForm(req: NextApiRequest): Promise<string> {
   })
 }
 
-// ── Extract text from PDF ─────────────────────────────────────────────────────
 async function extractTextFromPDF(filePath: string): Promise<string> {
-  // pdf-parse uses require internally; dynamic require avoids ESM issues
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const pdfParse = require('pdf-parse') as (buf: Buffer) => Promise<{ text: string }>
   const buffer = fs.readFileSync(filePath)
@@ -35,7 +32,6 @@ async function extractTextFromPDF(filePath: string): Promise<string> {
   return data.text
 }
 
-// ── Split text into sentences ─────────────────────────────────────────────────
 function splitSentences(text: string): string[] {
   return text
     .replace(/\s+/g, ' ')
@@ -45,19 +41,13 @@ function splitSentences(text: string): string[] {
     .filter((s) => s.length > 25)
 }
 
-// ── HuggingFace zero-shot classification ─────────────────────────────────────
-interface HFResponse {
+interface HFResult {
   labels: string[]
   scores: number[]
 }
 
-async function queryHF(
-  sentence: string,
-  hfToken: string,
-  retried = false
-): Promise<HFResponse> {
-  const HF_API =
-    'https://router.huggingface.co/hf-inference/models/facebook/bart-large-mnli'
+async function queryHF(sentence: string, hfToken: string, retried = false): Promise<HFResult | null> {
+  const HF_API = 'https://router.huggingface.co/hf-inference/models/facebook/bart-large-mnli'
 
   const res = await fetch(HF_API, {
     method: 'POST',
@@ -73,7 +63,6 @@ async function queryHF(
 
   if (!res.ok) {
     if (res.status === 503 && !retried) {
-      // Model cold-starting — wait 10s and retry once
       await new Promise((r) => setTimeout(r, 10000))
       return queryHF(sentence, hfToken, true)
     }
@@ -81,13 +70,19 @@ async function queryHF(
     throw new Error(`HF API ${res.status}: ${txt}`)
   }
 
-  return res.json() as Promise<HFResponse>
+  // HF may return an object OR an array wrapping the object
+  const json = await res.json()
+  const result: HFResult = Array.isArray(json) ? json[0] : json
+
+  if (!result || !Array.isArray(result.labels) || !Array.isArray(result.scores)) {
+    console.error('Unexpected HF shape:', JSON.stringify(json))
+    return null
+  }
+
+  return result
 }
 
-async function getImportantSentences(
-  sentences: string[],
-  hfToken: string
-): Promise<string[]> {
+async function getImportantSentences(sentences: string[], hfToken: string): Promise<string[]> {
   const toAnalyze = sentences.slice(0, 60)
   const scored: { sentence: string; score: number }[] = []
 
@@ -97,6 +92,10 @@ async function getImportantSentences(
     const results = await Promise.all(batch.map((s) => queryHF(s, hfToken)))
     for (let j = 0; j < batch.length; j++) {
       const r = results[j]
+      if (!r) {
+        scored.push({ sentence: batch[j], score: 0 })
+        continue
+      }
       const idx = r.labels.indexOf('key point')
       scored.push({ sentence: batch[j], score: idx >= 0 ? r.scores[idx] : 0 })
     }
@@ -108,11 +107,7 @@ async function getImportantSentences(
   return toAnalyze.filter((s) => topSet.has(s))
 }
 
-// ── Generate highlighted PDF ──────────────────────────────────────────────────
-async function generateHighlightedPDF(
-  originalPath: string,
-  highlighted: string[]
-): Promise<Buffer> {
+async function generateHighlightedPDF(originalPath: string, highlighted: string[]): Promise<Buffer> {
   const { PDFDocument, rgb, StandardFonts } = await import('pdf-lib')
 
   const pdfDoc = await PDFDocument.load(fs.readFileSync(originalPath))
@@ -120,19 +115,15 @@ async function generateHighlightedPDF(
   const boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold)
   const regularFont = await pdfDoc.embedFont(StandardFonts.Helvetica)
 
-  // Insert Key Points summary page at the front
   const summaryPage = pdfDoc.insertPage(0)
   const { width, height } = summaryPage.getSize()
 
-  // Cream background
   summaryPage.drawRectangle({ x: 0, y: 0, width, height, color: rgb(0.98, 0.96, 0.91) })
-  // Red header
   summaryPage.drawRectangle({ x: 0, y: height - 80, width, height: 80, color: rgb(0.78, 0.25, 0.04) })
   summaryPage.drawText('KEY HIGHLIGHTS', { x: 48, y: height - 50, size: 22, font: boldFont, color: rgb(1, 1, 1) })
   summaryPage.drawText('AI PDF Highlighter — Most Important Sentences', { x: 48, y: height - 70, size: 10, font: regularFont, color: rgb(1, 0.9, 0.85) })
   summaryPage.drawText(`${highlighted.length} key sentences identified`, { x: 48, y: height - 106, size: 11, font: boldFont, color: rgb(0.4, 0.3, 0.2) })
 
-  // List sentences with word wrap
   let y = height - 134
   const LINE_H = 14
   const MAX_W = width - 96
@@ -140,34 +131,28 @@ async function generateHighlightedPDF(
 
   for (const sentence of highlighted) {
     if (y < 60) break
-    // Yellow bullet
     summaryPage.drawRectangle({ x: 48, y: y - 10, width: 8, height: 10, color: rgb(1.0, 0.82, 0.4) })
-
     const words = sentence.split(' ')
     let line = ''
-    let xOffset = 62
-
     for (const word of words) {
       const test = line ? `${line} ${word}` : word
       if (regularFont.widthOfTextAtSize(test, FS) > MAX_W - 20 && line) {
         if (y < 60) break
-        summaryPage.drawText(line, { x: xOffset, y, size: FS, font: regularFont, color: rgb(0.15, 0.12, 0.1) })
+        summaryPage.drawText(line, { x: 62, y, size: FS, font: regularFont, color: rgb(0.15, 0.12, 0.1) })
         y -= LINE_H
         line = word
-        xOffset = 62
       } else {
         line = test
       }
     }
     if (line && y > 60) {
-      summaryPage.drawText(line, { x: xOffset, y, size: FS, font: regularFont, color: rgb(0.15, 0.12, 0.1) })
+      summaryPage.drawText(line, { x: 62, y, size: FS, font: regularFont, color: rgb(0.15, 0.12, 0.1) })
     }
     y -= LINE_H + 4
   }
 
   summaryPage.drawText('Generated by AI PDF Highlighter', { x: 48, y: 32, size: 8, font: regularFont, color: rgb(0.6, 0.55, 0.5) })
 
-  // Add "See Key Points" badge to each original page
   for (const page of pages) {
     const pw = page.getWidth()
     const ph = page.getHeight()
@@ -178,7 +163,6 @@ async function generateHighlightedPDF(
   return Buffer.from(await pdfDoc.save())
 }
 
-// ── Main handler ──────────────────────────────────────────────────────────────
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' })
@@ -193,7 +177,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   try {
     const start = Date.now()
-
     filePath = await parseForm(req)
 
     const fullText = await extractTextFromPDF(filePath)
